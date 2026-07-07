@@ -14,7 +14,8 @@ def run(*, market=None, top_n=20, min_marcap=3e11, rank_by="amount",
         name_contains=None, use_news=True, backend="claude", model=None,
         target_date=None, log=print) -> dict:
     target_date = target_date or dt.date.today().strftime("%Y-%m-%d")
-    llm = LLM(backend=backend, model=model)
+    llm = LLM(backend=backend, model=model, log=log)
+    log(f"[llm] 백엔드={backend} 모델={llm.model} (저가 우선)")
 
     log(f"[1/4] 스크리닝 — market={market or '전체'} rank_by={rank_by} top{top_n}"
         + (f" 테마='{name_contains}'" if name_contains else ""))

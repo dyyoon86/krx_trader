@@ -56,11 +56,14 @@ KQ_CHAT=<chat> KQ_KEY=<key> python run.py analyze --market KOSPI --top 10 --noti
   · 역발상숏셀러: AVOID(0.72) 사이클 피크 후 급락 …
 ```
 
-## 백엔드 선택
+## 백엔드·모델 (비용 보호 내장)
+대량 호출(종목당 1콜)이라 **저가 모델을 자동 선택**하고, 비싼 모델은 지정해도 **자동 다운그레이드**한다.
+- 기본 모델: claude→`haiku`, openai→`gpt-4o-mini`, deepseek→`deepseek-chat`
+- 차단(자동 강등): opus / gpt-4o / gpt-4-turbo / o1·o3 / sonnet / deepseek-r 등
 ```bash
-python run.py analyze --backend claude                 # 기본(로컬 CLI)
-python run.py analyze --backend deepseek --model deepseek-chat   # 저비용 API
-python run.py analyze --backend openai --model gpt-4o-mini
+python run.py analyze --backend claude                 # haiku 자동(로컬 CLI, 사실상 무료)
+python run.py analyze --backend deepseek               # deepseek-chat 자동
+python run.py analyze --backend openai --model gpt-4o  # → gpt-4o-mini 로 자동 강등
 ```
 
 ## 로드맵
