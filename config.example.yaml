@@ -1,0 +1,17 @@
+# kquant-agents 설정 예시 — 복사해서 config.local.yaml 로 쓰거나 환경변수 사용
+# (실제 실행 인자는 CLI 플래그로도 지정 가능)
+
+screen:
+  market: KOSPI        # KOSPI | KOSDAQ | (비우면 전체)
+  top_n: 15
+  min_marcap: 300000000000   # 3000억
+  rank_by: amount      # amount(거래대금) | change(등락률) | marcap
+  contains:            # 종목명 포함 키워드(간이 테마), 예) 반도체
+
+llm:
+  backend: claude      # claude | openai | deepseek
+  model:               # 비우면 백엔드 기본값
+
+notify:                # 텔레그램(cokacdir) — 환경변수 KQ_CHAT/KQ_KEY 권장(커밋 금지)
+  chat:
+  key:
