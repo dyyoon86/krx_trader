@@ -4,3 +4,4 @@ __pycache__/
 picks/
 config.local.yaml
 .env
+paper/

@@ -37,7 +37,18 @@ def main():
     a.add_argument("--model", default=None)
     a.add_argument("--notify", action="store_true", help="텔레그램 발송(KQ_CHAT/KQ_KEY)")
 
-    sub.add_parser("track", help="저장된 픽 페이퍼 수익률")
+    sub.add_parser("track", help="저장된 픽 단순 수익률 조회")
+
+    pp = sub.add_parser("paper", help="가상계좌 페이퍼 트레이딩(분석→매매→스냅샷)")
+    pp.add_argument("--market", choices=["KOSPI", "KOSDAQ"], default=None)
+    pp.add_argument("--top", type=int, default=20)
+    pp.add_argument("--contains", default=None)
+    pp.add_argument("--rank-by", choices=["amount", "change", "marcap"], default="amount")
+    pp.add_argument("--backend", default="claude", choices=["claude", "openai", "deepseek"])
+    pp.add_argument("--no-news", action="store_true")
+    pp.add_argument("--notify", action="store_true")
+
+    sub.add_parser("account", help="페이퍼 계좌 현황")
 
     args = ap.parse_args()
 
@@ -55,6 +66,36 @@ def main():
                                     filename=f"picks_{out['date']}.md")
             print("\n[텔레그램]", "발송 완료" if ok else "발송 실패(KQ_CHAT/KQ_KEY 확인)")
 
+    elif args.cmd == "paper":
+        from kquant import paper
+        out = pipeline.run(
+            market=args.market, top_n=args.top, rank_by=args.rank_by,
+            name_contains=args.contains, use_news=not args.no_news, backend=args.backend)
+        print("\n── 페이퍼 매매 ──")
+        res = paper.run_day(out, log=print)
+        snap = res["snapshot"]
+        st = paper.status()
+        report = _paper_report(out, st, snap)
+        print("\n" + "=" * 60 + "\n" + report)
+        if args.notify:
+            from kquant import notify
+            notify.send_report(report, os.environ.get("KQ_CHAT", ""),
+                               os.environ.get("KQ_KEY", ""),
+                               filename=f"paper_{out['date']}.md")
+
+    elif args.cmd == "account":
+        from kquant import paper
+        st = paper.status()
+        print(f"평가액 {st['equity']:,}원 / 초기 {st['initial']:,}원  "
+              f"({st['total_return_pct']:+.2f}%)  현금 {st['cash']:,}  실현손익 {st['realized_pnl']:+,}")
+        if st["positions"]:
+            print(f"\n{'종목':<12}{'수량':>7}{'진입':>10}{'현재':>10}{'수익률%':>9}{'평가액':>12}")
+            for p in st["positions"]:
+                print(f"{p['name']:<12}{p['shares']:>7,}{int(p['entry']):>10,}"
+                      f"{int(p['current']):>10,}{p['return_pct']:>+9.2f}{p['value']:>12,}")
+        else:
+            print("보유 종목 없음(전액 현금).")
+
     elif args.cmd == "track":
         rows = portfolio.track()
         if not rows:
@@ -67,6 +108,24 @@ def main():
         vals = [r["return_pct"] for r in rows if r["return_pct"] is not None]
         if vals:
             print(f"\n평균 수익률: {sum(vals)/len(vals):+.2f}%  (승률 {sum(1 for v in vals if v>0)/len(vals)*100:.0f}%)")
+
+
+def _paper_report(out, st, snap):
+    L = [f"# 📄 페이퍼 트레이딩 · {out['date']}", ""]
+    L.append(f"평가액 **{st['equity']:,}원** ({st['total_return_pct']:+.2f}%) · "
+             f"현금 {st['cash']:,} · 실현손익 {st['realized_pnl']:+,}")
+    if st["positions"]:
+        L.append("\n## 보유 종목")
+        for p in st["positions"]:
+            L.append(f"- {p['name']} {p['shares']:,}주 · 진입 {int(p['entry']):,} → "
+                     f"현재 {int(p['current']):,} ({p['return_pct']:+.2f}%)")
+    else:
+        L.append("\n보유 종목 없음(전액 현금).")
+    if out["buys"]:
+        L.append("\n## 오늘 매수 후보(BUY)")
+        for r in out["buys"]:
+            L.append(f"- {r['name']} 확신 {r['confidence']:.2f} · 비중 {r['weight_pct']:.0f}%")
+    return "\n".join(L)
 
 
 def _n(x):
