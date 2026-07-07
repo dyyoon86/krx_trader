@@ -21,9 +21,10 @@ HISTORY = os.path.join(STATE_DIR, "history.jsonl")
 
 DEFAULTS = {
     "initial_capital": 10_000_000,
-    "take_profit": 10.0,     # +10% 익절
-    "stop_loss": -7.0,       # -7% 손절
-    "max_hold_days": 15,
+    "take_profit": 0.0,      # 0=고정익절 없음(트렌드 먹기). >0이면 그 %에 익절
+    "trailing_stop": -12.0,  # 고점 대비 -12% 하락 시 청산(트레일링). 0=끔
+    "stop_loss": -7.0,       # 진입가 대비 -7% 초기 손절
+    "max_hold_days": 40,
     "max_positions": 8,
     "per_trade_cap_pct": 20.0,
     "fee_pct": 0.2,
@@ -120,16 +121,24 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, on_date: str | None = N
         if not o:
             continue
         entry = pos["entry"]
-        tp_price = entry * (1 + cfg["take_profit"] / 100)
+        prior_peak = pos.get("peak", entry)           # 진입 후 전일까지 최고가
         sl_price = entry * (1 + cfg["stop_loss"] / 100)
+        tp = cfg.get("take_profit") or 0
+        tp_price = entry * (1 + tp / 100) if tp else None
+        trail = cfg.get("trailing_stop") or 0
+        trail_price = prior_peak * (1 + trail / 100) if trail else None
         held = (dt.date.fromisoformat(today) - dt.date.fromisoformat(pos["entry_date"])).days
         fill = reason = None
-        if o["low"] <= sl_price:                      # 손절 우선(보수적)
+        if o["low"] <= sl_price:                       # 초기 손절 우선
             fill, reason = sl_price, f"손절 {cfg['stop_loss']:.0f}%"
-        elif o["high"] >= tp_price:
-            fill, reason = tp_price, f"익절 +{cfg['take_profit']:.0f}%"
+        elif trail_price and prior_peak > entry * 1.03 and o["low"] <= trail_price:
+            fill, reason = trail_price, f"트레일링 -{abs(trail):.0f}%(고점대비)"
+        elif tp_price and o["high"] >= tp_price:
+            fill, reason = tp_price, f"익절 +{tp:.0f}%"
         elif held >= cfg["max_hold_days"]:
             fill, reason = o["close"], f"만기 {held}일"
+        else:
+            pos["peak"] = max(prior_peak, o["high"])   # 미청산 시 고점 갱신
         if fill:
             proceeds = pos["shares"] * fill * (1 - fee)
             pnl = proceeds - pos["shares"] * entry
