@@ -80,14 +80,50 @@ def by_tickers(items) -> "list[dict]":
     return out
 
 
-def features(code: str, days: int = 180) -> dict:
-    """개별 종목 기술적 피처 — 최근 days일 OHLCV에서 계산."""
-    end = dt.date.today()
-    start = end - dt.timedelta(days=int(days * 1.6) + 10)
+def stock_asof(code: str, as_of: str) -> dict | None:
+    """백테스트용 — 특정일 기준 종목 스냅샷(name/close/change/amount 근사)."""
+    uni = {s["code"]: s for s in load_universe()}
+    name = uni.get(code, {}).get("name") or code
+    market = uni.get(code, {}).get("market")
+    from . import prices
+    if prices.armed():
+        o = prices.ohlc_on(code, as_of)
+        if not o:
+            return None
+        return {"code": code, "name": name, "market": market, "close": o["close"],
+                "change": round(o["change"] * 100, 2),
+                "amount": o["close"] * o["volume"], "marcap": None}
+    end = dt.date.fromisoformat(as_of)
     try:
-        df = fdr.DataReader(code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    except Exception as e:
-        return {"error": f"OHLCV 조회 실패: {e}"}
+        df = fdr.DataReader(code, (end - dt.timedelta(days=12)).strftime("%Y-%m-%d"), as_of)
+        if df is None or len(df) == 0:
+            return None
+        r = df.iloc[-1]
+        close = float(r["Close"])
+        return {"code": code, "name": name, "market": market, "close": close,
+                "change": round(float(r.get("Change", 0)) * 100, 2),
+                "amount": close * float(r["Volume"]), "marcap": None}
+    except Exception:
+        return None
+
+
+def features(code: str, days: int = 180, as_of: str | None = None) -> dict:
+    """개별 종목 기술적 피처 — 최근 days일 OHLCV에서 계산.
+    as_of 지정 시 그 날짜까지만 사용(백테스트 룩어헤드 방지)."""
+    end = dt.date.fromisoformat(as_of) if as_of else dt.date.today()
+    start = end - dt.timedelta(days=int(days * 1.6) + 10)
+    from . import prices
+    if as_of and prices.armed():                 # 백테스트: 캐시 슬라이스
+        df = prices.hist_until(code, as_of)
+        if df is not None:
+            df = df.tail(days + 60)
+        if df is None or len(df) < 20:
+            return {"error": "데이터 부족(캐시)"}
+    else:
+        try:
+            df = fdr.DataReader(code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        except Exception as e:
+            return {"error": f"OHLCV 조회 실패: {e}"}
     if df is None or len(df) < 20:
         return {"error": "데이터 부족"}
     c = df["Close"]

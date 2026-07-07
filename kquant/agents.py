@@ -64,6 +64,46 @@ def _prompt(stock: dict, feat: dict, news: list[str], target_date: str) -> str:
 }}"""
 
 
+def analyze_batch(llm, items: list[tuple], target_date: str) -> list[dict]:
+    """여러 종목을 1회 호출로 분석(백테스트 속도용). items=[(stock,feat), ...]
+    각 종목에 5인 관점을 내부적으로 반영한 '최종 결정'을 배열로 받는다."""
+    rows = []
+    for s, feat in items:
+        rows.append({"code": s["code"], "name": s["name"],
+                     "종가": s.get("close"), "등락률%": s.get("change"),
+                     "거래대금_억": round((s.get("amount") or 0) / 1e8, 1),
+                     "기술적피처": feat})
+    specialists_desc = ", ".join(n for n, _ in SPECIALISTS)
+    prompt = f"""[분석 기준일] {target_date}
+아래 여러 종목을 각각, 5인 전문가({specialists_desc}) 관점을 내부적으로 종합해 최종 판단하라.
+데이터에 없는 수치 지어내기 금지.
+
+[종목들]
+{json.dumps(rows, ensure_ascii=False)}
+
+각 종목마다 action(BUY/HOLD/AVOID), confidence(0~1), weight_pct(BUY일때 0~25 아니면 0),
+reason(한 문장, 데이터 근거)을 낸다. 아래 JSON만 출력:
+{{"decisions":[{{"code":"...","action":"...","confidence":0.0,"weight_pct":0,"reason":"..."}}]}}"""
+    try:
+        res = llm.json(prompt, system=_SYSTEM)
+    except Exception:
+        return [{"code": s["code"], "name": s["name"], "error": "batch 분석 실패"} for s, _ in items]
+    dmap = {d.get("code"): d for d in res.get("decisions", [])}
+    out = []
+    for s, feat in items:
+        d = dmap.get(s["code"], {})
+        out.append({
+            "code": s["code"], "name": s["name"], "market": s.get("market"),
+            "price": s.get("close"), "change": s.get("change"),
+            "amount_eok": round((s.get("amount") or 0) / 1e8, 1), "opinions": [],
+            "action": (d.get("action") or "HOLD").upper(),
+            "confidence": float(d.get("confidence") or 0),
+            "weight_pct": float(d.get("weight_pct") or 0),
+            "summary": d.get("reason") or "",
+        })
+    return out
+
+
 def analyze(llm, stock: dict, feat: dict, news: list[str], target_date: str) -> dict:
     """종목 1개를 5인 애널리스트 + 최종결정으로 분석 → 결과 dict."""
     prompt = _prompt(stock, feat, news, target_date)

@@ -55,6 +55,14 @@ def main():
 
     sub.add_parser("account", help="페이퍼 계좌 현황")
 
+    bt = sub.add_parser("backtest", help="과거 차트로 백테스트(고정 종목 리스트)")
+    bt.add_argument("--tickers", required=True, help="종목코드/이름 쉼표구분. 예: 005930,000660,234340")
+    bt.add_argument("--start", required=True, help="시작일 YYYY-MM-DD")
+    bt.add_argument("--end", default=None, help="종료일 YYYY-MM-DD(기본 오늘)")
+    bt.add_argument("--every", type=int, default=5, help="분석 주기(거래일). 기본 5=주1회")
+    bt.add_argument("--backend", default="claude", choices=["claude", "openai", "deepseek"])
+    bt.add_argument("--model", default=None)
+
     args = ap.parse_args()
 
     if args.cmd == "analyze":
@@ -107,6 +115,29 @@ def main():
         if st.get("pending"):
             print("\n예약 매수(다음 개장가 체결 대기): "
                   + ", ".join(f"{p['name']}({p.get('weight_pct',0):.0f}%)" for p in st["pending"]))
+
+    elif args.cmd == "backtest":
+        import datetime as _dt, tempfile
+        from kquant import data
+        # 백테스트 전용 임시 계좌(실계좌 오염 방지)
+        os.environ["KQ_PAPER_DIR"] = tempfile.mkdtemp(prefix="kq_bt_")
+        import importlib
+        from kquant import paper as _paper, backtest
+        importlib.reload(_paper); importlib.reload(backtest)
+        tickers = [x.strip() for x in args.tickers.replace(",", " ").split() if x.strip()]
+        codes = [s["code"] for s in data.by_tickers(tickers)] or tickers
+        end = args.end or _dt.date.today().strftime("%Y-%m-%d")
+        res = backtest.run(codes, args.start, end, every=args.every,
+                           backend=args.backend, model=args.model)
+        print("\n" + "=" * 60)
+        print(f"📊 백테스트 결과  {res['period'][0]} ~ {res['period'][1]} ({res['trading_days']}거래일)")
+        print(f"  전략 수익률   : {res['total_return_pct']:+.2f}%  (평가액 {res['equity']:,}원)")
+        print(f"  벤치마크(B&H) : {res['benchmark_pct']:+.2f}%" if res['benchmark_pct'] is not None else "  벤치마크: n/a")
+        print(f"  실현손익      : {res['realized_pnl']:+,}원")
+        print(f"  매수신호 {res['signals']}회 · 매도 {res['sells']}건"
+              + (f" · 승률 {res['win_rate']}%" if res['win_rate'] is not None else ""))
+        if res["positions"]:
+            print("  종료시 보유:", ", ".join(f"{p['name']}({p['return_pct']:+.1f}%)" for p in res["positions"]))
 
     elif args.cmd == "track":
         rows = portfolio.track()

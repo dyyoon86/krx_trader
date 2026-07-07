@@ -46,11 +46,17 @@ def _save(acc):
     json.dump(acc, open(ACCOUNT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 
-def _ohlc(fdr, code):
-    """최근 거래일 OHLC(open/high/low/close). 실패 시 None."""
+def _ohlc(fdr, code, on: str | None = None):
+    """OHLC(open/high/low/close). on 지정 시 그 날짜 기준(백테스트), 없으면 최근 거래일."""
+    from . import prices
+    if prices.armed():
+        o = prices.ohlc_on(code, on)
+        return {"open": o["open"], "high": o["high"], "low": o["low"],
+                "close": o["close"]} if o else None
     try:
-        end = dt.date.today()
-        df = fdr.DataReader(code, (end - dt.timedelta(days=15)).strftime("%Y-%m-%d"))
+        end = dt.date.fromisoformat(on) if on else dt.date.today()
+        df = fdr.DataReader(code, (end - dt.timedelta(days=15)).strftime("%Y-%m-%d"),
+                            end.strftime("%Y-%m-%d"))
         if df is None or len(df) == 0:
             return None
         r = df.iloc[-1]
@@ -60,25 +66,28 @@ def _ohlc(fdr, code):
         return None
 
 
-def _equity(acc, fdr, field="close"):
+def _equity(acc, fdr, field="close", on=None):
     total = acc["cash"]
     for code, pos in acc["positions"].items():
-        o = _ohlc(fdr, code)
+        o = _ohlc(fdr, code, on)
         px = o[field] if o else pos["entry"]
         total += pos["shares"] * px
     return total
 
 
-def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
+def run_day(pipeline_out: dict, cfg: dict | None = None, on_date: str | None = None,
+            log=print) -> dict:
+    """on_date 지정 시 그 날짜 가격으로 체결(백테스트). 없으면 실시간(최근 거래일)."""
     import FinanceDataReader as fdr
     cfg = {**DEFAULTS, **(cfg or {})}
     acc = _load()
     today = pipeline_out["date"]
+    on = on_date
     fee = cfg["fee_pct"] / 100
 
     # ── 1) 예약 매수 체결(어제 픽) — 오늘 개장가 ──
     if acc["pending_buys"]:
-        equity = _equity(acc, fdr, "open")
+        equity = _equity(acc, fdr, "open", on)
         still = []
         for pb in acc["pending_buys"]:
             code = pb["code"]
@@ -86,7 +95,7 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
                 continue
             if len(acc["positions"]) >= cfg["max_positions"]:
                 still.append(pb); continue
-            o = _ohlc(fdr, code)
+            o = _ohlc(fdr, code, on)
             if not o:
                 still.append(pb); continue          # 데이터 없으면 예약 유지
             entry = o["open"]
@@ -107,7 +116,7 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
     # ── 2) 보유종목 익절/손절/만기 (장중 고저 기반) ──
     for code in list(acc["positions"].keys()):
         pos = acc["positions"][code]
-        o = _ohlc(fdr, code)
+        o = _ohlc(fdr, code, on)
         if not o:
             continue
         entry = pos["entry"]
@@ -143,7 +152,7 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
         log(f"  예약 매수 {r['name']} (다음 개장가, 비중 {r.get('weight_pct',0):.0f}%)")
 
     # ── 4) 스냅샷(종가 평가) ──
-    equity = _equity(acc, fdr, "close")
+    equity = _equity(acc, fdr, "close", on)
     snap = {"date": today, "equity": round(equity), "cash": round(acc["cash"]),
             "positions": len(acc["positions"]), "pending": len(acc["pending_buys"]),
             "total_return_pct": round((equity / acc["initial_capital"] - 1) * 100, 2)}
@@ -154,12 +163,12 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
     return {"account": acc, "snapshot": snap}
 
 
-def status() -> dict:
+def status(on: str | None = None) -> dict:
     import FinanceDataReader as fdr
     acc = _load()
     rows = []
     for code, pos in acc["positions"].items():
-        o = _ohlc(fdr, code)
+        o = _ohlc(fdr, code, on)
         cur = o["close"] if o else pos["entry"]
         ret = (cur / pos["entry"] - 1) * 100
         rows.append({"code": code, "name": pos["name"], "shares": pos["shares"],
