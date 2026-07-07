@@ -69,6 +69,14 @@ python run.py analyze --backend deepseek                # deepseek-chat(tier1) +
 ```
 > 예: tier1 haiku가 HOLD로 애매하게 낸 종목을 tier2 sonnet이 더 확신 있게 AVOID/BUY로 교정.
 
+## 매일 자동화 (크론)
+`run_daily.sh` = 장마감 후 분석→가상매매→계좌현황(+텔레그램). 평일 16:00 예약 예:
+```cron
+0 16 * * 1-5 KQ_CHAT=<chat> KQ_KEY=<key> /path/kquant-agents/run_daily.sh >> paper/cron.log 2>&1
+```
+- flock으로 중복 실행 방지, `KQ_ARGS`로 스크리닝 옵션 조정(기본 `--market KOSPI --top 20`)
+- 비밀키는 크론 라인/환경변수로만 주입(소스에 없음)
+
 ## 로드맵
 - [ ] 펀더멘털(PER/PBR/ROE) 노드 — pykrx/네이버 (한국 IP)
 - [ ] 섹터/테마 자동 분류(반도체 공급망 등)
