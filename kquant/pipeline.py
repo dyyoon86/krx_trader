@@ -11,7 +11,7 @@ from .llm import LLM, TIER2_DEFAULT
 
 
 def run(*, market=None, top_n=20, min_marcap=3e11, rank_by="amount",
-        name_contains=None, use_news=True, backend="claude", model=None,
+        name_contains=None, include=None, use_news=True, backend="claude", model=None,
         target_date=None, two_tier=True, tier2_model=None,
         max_tier2=5, escalate_min_conf=0.45, log=print) -> dict:
     target_date = target_date or dt.date.today().strftime("%Y-%m-%d")
@@ -23,6 +23,13 @@ def run(*, market=None, top_n=20, min_marcap=3e11, rank_by="amount",
         + (f" 테마='{name_contains}'" if name_contains else ""))
     universe = data.screen(market=market, top_n=top_n, min_marcap=min_marcap,
                            rank_by=rank_by, name_contains=name_contains)
+    # 관심종목(항상 포함) — 시장·거래대금과 무관하게 합류(중복 제거)
+    forced = data.by_tickers(include)
+    have = {s["code"] for s in universe}
+    added = [s for s in forced if s["code"] not in have]
+    if added:
+        universe += added
+        log(f"      + 관심종목 {len(added)}개 포함: " + ", ".join(s["name"] for s in added))
     log(f"      대상 {len(universe)}종목: " + ", ".join(s["name"] for s in universe[:10])
         + (" …" if len(universe) > 10 else ""))
 

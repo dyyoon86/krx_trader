@@ -62,6 +62,24 @@ def screen(market: str | None = None, top_n: int = 20,
     return uni[:top_n]
 
 
+def by_tickers(items) -> "list[dict]":
+    """종목코드 또는 종목명 리스트 → 유니버스에서 해당 종목 dict(관심종목/항상포함용)."""
+    if not items:
+        return []
+    if isinstance(items, str):
+        items = [x.strip() for x in items.replace(",", " ").split() if x.strip()]
+    uni = load_universe()
+    by_code = {s["code"]: s for s in uni}
+    by_name = {s["name"]: s for s in uni}
+    out = []
+    for it in items:
+        it = str(it).strip()
+        s = by_code.get(it.zfill(6)) or by_name.get(it)
+        if s:
+            out.append(s)
+    return out
+
+
 def features(code: str, days: int = 180) -> dict:
     """개별 종목 기술적 피처 — 최근 days일 OHLCV에서 계산."""
     end = dt.date.today()

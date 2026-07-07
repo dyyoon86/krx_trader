@@ -32,6 +32,7 @@ def main():
     a.add_argument("--min-marcap", type=float, default=3e11, help="최소 시총(원)")
     a.add_argument("--rank-by", choices=["amount", "change", "marcap"], default="amount")
     a.add_argument("--contains", default=None, help="종목명 포함 키워드(간이 테마)")
+    a.add_argument("--include", default=None, help="항상 포함할 종목(코드/이름, 쉼표구분). 예: 234340,삼성전자")
     a.add_argument("--no-news", action="store_true")
     a.add_argument("--backend", default="claude", choices=["claude", "openai", "deepseek"])
     a.add_argument("--model", default=None, help="tier1 모델(비우면 저가 자동)")
@@ -46,6 +47,7 @@ def main():
     pp.add_argument("--market", choices=["KOSPI", "KOSDAQ"], default=None)
     pp.add_argument("--top", type=int, default=20)
     pp.add_argument("--contains", default=None)
+    pp.add_argument("--include", default=None, help="항상 포함할 종목(코드/이름, 쉼표구분)")
     pp.add_argument("--rank-by", choices=["amount", "change", "marcap"], default="amount")
     pp.add_argument("--backend", default="claude", choices=["claude", "openai", "deepseek"])
     pp.add_argument("--no-news", action="store_true")
@@ -59,6 +61,7 @@ def main():
         out = pipeline.run(
             market=args.market, top_n=args.top, min_marcap=args.min_marcap,
             rank_by=args.rank_by, name_contains=args.contains,
+            include=args.include or os.environ.get("KQ_INCLUDE"),
             use_news=not args.no_news, backend=args.backend, model=args.model,
             two_tier=not args.no_tier2, tier2_model=args.tier2_model,
             max_tier2=args.max_tier2)
@@ -75,7 +78,8 @@ def main():
         from kquant import paper
         out = pipeline.run(
             market=args.market, top_n=args.top, rank_by=args.rank_by,
-            name_contains=args.contains, use_news=not args.no_news, backend=args.backend)
+            name_contains=args.contains, include=args.include or os.environ.get("KQ_INCLUDE"),
+            use_news=not args.no_news, backend=args.backend)
         print("\n── 페이퍼 매매 ──")
         res = paper.run_day(out, log=print)
         snap = res["snapshot"]
