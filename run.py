@@ -104,6 +104,9 @@ def main():
                       f"{int(p['current']):>10,}{p['return_pct']:>+9.2f}{p['value']:>12,}")
         else:
             print("보유 종목 없음(전액 현금).")
+        if st.get("pending"):
+            print("\n예약 매수(다음 개장가 체결 대기): "
+                  + ", ".join(f"{p['name']}({p.get('weight_pct',0):.0f}%)" for p in st["pending"]))
 
     elif args.cmd == "track":
         rows = portfolio.track()
@@ -130,8 +133,12 @@ def _paper_report(out, st, snap):
                      f"현재 {int(p['current']):,} ({p['return_pct']:+.2f}%)")
     else:
         L.append("\n보유 종목 없음(전액 현금).")
+    if st.get("pending"):
+        L.append("\n## ⏳ 예약 매수 (다음 개장가 체결)")
+        for p in st["pending"]:
+            L.append(f"- {p['name']} · 비중 {p.get('weight_pct',0):.0f}%")
     if out["buys"]:
-        L.append("\n## 오늘 매수 후보(BUY)")
+        L.append("\n## 오늘 BUY 신호(→ 내일 개장가 예약)")
         for r in out["buys"]:
             L.append(f"- {r['name']} 확신 {r['confidence']:.2f} · 비중 {r['weight_pct']:.0f}%")
     return "\n".join(L)

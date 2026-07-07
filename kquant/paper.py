@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""페이퍼 트레이딩 — 가상 계좌로 AI 픽을 실제 매매하듯 시뮬레이션.
+"""페이퍼 트레이딩 — 실전(예약주문) 모델로 시뮬레이션.
 
-- 상태(현금·보유종목)를 JSON으로 관리(account.json).
-- buy: 당일 BUY 픽을 제안비중만큼 가상 매수(진입가=당일 종가).
-- apply_exits: 익절/손절/최대보유일 규칙으로 매도.
-- mark_to_market: 보유종목 현재가로 평가액 산출.
-- snapshot: 매일 계좌 상태를 기록(equity curve).
-실행은 pipeline.run(분석) 결과를 받아 하루치 매매를 처리한다.
+핵심(현실화):
+- 매수: 분석은 장마감 후 → 픽을 '예약'해두고 **다음날 개장가**에 체결.
+- 익절/손절: 증권사 지정가·스톱 예약주문처럼, 그날 **고가가 익절가 도달**하면 익절가에,
+  **저가가 손절가 도달**하면 손절가에 체결(장중 자동체결 근사). 같은 날 둘 다 닿으면
+  보수적으로 손절 우선.
+- 만기: 보유 max_hold일 초과 시 그날 종가로 청산.
+상태(현금·보유·예약)는 account.json, 일별 스냅샷은 history.jsonl.
 """
 from __future__ import annotations
 import datetime as dt
@@ -19,23 +20,25 @@ ACCOUNT = os.path.join(STATE_DIR, "account.json")
 HISTORY = os.path.join(STATE_DIR, "history.jsonl")
 
 DEFAULTS = {
-    "initial_capital": 10_000_000,   # 1000만원
-    "take_profit": 10.0,             # +10% 익절
-    "stop_loss": -7.0,               # -7% 손절
-    "max_hold_days": 15,             # 최대 보유(거래일 근사=달력일)
-    "max_positions": 8,              # 동시 보유 최대
-    "per_trade_cap_pct": 20.0,       # 종목당 최대 비중
-    "fee_pct": 0.2,                  # 매수+매도 왕복 수수료+세금 근사
+    "initial_capital": 10_000_000,
+    "take_profit": 10.0,     # +10% 익절
+    "stop_loss": -7.0,       # -7% 손절
+    "max_hold_days": 15,
+    "max_positions": 8,
+    "per_trade_cap_pct": 20.0,
+    "fee_pct": 0.2,
 }
 
 
 def _load():
     if os.path.isfile(ACCOUNT):
-        return json.load(open(ACCOUNT, encoding="utf-8"))
-    return {"cash": DEFAULTS["initial_capital"],
-            "initial_capital": DEFAULTS["initial_capital"],
-            "positions": {},  # code -> {name, shares, entry, entry_date}
-            "realized_pnl": 0.0, "trades": []}
+        acc = json.load(open(ACCOUNT, encoding="utf-8"))
+    else:
+        acc = {"cash": DEFAULTS["initial_capital"],
+               "initial_capital": DEFAULTS["initial_capital"],
+               "positions": {}, "realized_pnl": 0.0, "trades": []}
+    acc.setdefault("pending_buys", [])   # 다음 개장가 체결 대기(예약)
+    return acc
 
 
 def _save(acc):
@@ -43,83 +46,106 @@ def _save(acc):
     json.dump(acc, open(ACCOUNT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 
-def _price(fdr, code):
+def _ohlc(fdr, code):
+    """최근 거래일 OHLC(open/high/low/close). 실패 시 None."""
     try:
         end = dt.date.today()
-        df = fdr.DataReader(code, (end - dt.timedelta(days=12)).strftime("%Y-%m-%d"))
-        return float(df["Close"].iloc[-1]) if len(df) else None
+        df = fdr.DataReader(code, (end - dt.timedelta(days=15)).strftime("%Y-%m-%d"))
+        if df is None or len(df) == 0:
+            return None
+        r = df.iloc[-1]
+        return {"open": float(r["Open"]), "high": float(r["High"]),
+                "low": float(r["Low"]), "close": float(r["Close"])}
     except Exception:
         return None
 
 
+def _equity(acc, fdr, field="close"):
+    total = acc["cash"]
+    for code, pos in acc["positions"].items():
+        o = _ohlc(fdr, code)
+        px = o[field] if o else pos["entry"]
+        total += pos["shares"] * px
+    return total
+
+
 def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
-    """하루치 페이퍼 매매: 매도규칙 적용 → 신규 매수 → 스냅샷."""
     import FinanceDataReader as fdr
     cfg = {**DEFAULTS, **(cfg or {})}
     acc = _load()
     today = pipeline_out["date"]
     fee = cfg["fee_pct"] / 100
 
-    # 1) 보유종목 매도 규칙
+    # ── 1) 예약 매수 체결(어제 픽) — 오늘 개장가 ──
+    if acc["pending_buys"]:
+        equity = _equity(acc, fdr, "open")
+        still = []
+        for pb in acc["pending_buys"]:
+            code = pb["code"]
+            if code in acc["positions"]:
+                continue
+            if len(acc["positions"]) >= cfg["max_positions"]:
+                still.append(pb); continue
+            o = _ohlc(fdr, code)
+            if not o:
+                still.append(pb); continue          # 데이터 없으면 예약 유지
+            entry = o["open"]
+            weight = min(pb.get("weight_pct") or 0, cfg["per_trade_cap_pct"]) / 100
+            budget = min(equity * weight, acc["cash"])
+            shares = int(budget // (entry * (1 + fee)))
+            if shares <= 0:
+                continue
+            cost = shares * entry * (1 + fee)
+            acc["cash"] -= cost
+            acc["positions"][code] = {"name": pb["name"], "shares": shares,
+                                      "entry": entry, "entry_date": today}
+            acc["trades"].append({"date": today, "code": code, "name": pb["name"],
+                                  "side": "BUY", "price": entry, "shares": shares})
+            log(f"  매수(개장가) {pb['name']} {shares}주 @ {int(entry):,}")
+        acc["pending_buys"] = still
+
+    # ── 2) 보유종목 익절/손절/만기 (장중 고저 기반) ──
     for code in list(acc["positions"].keys()):
         pos = acc["positions"][code]
-        cur = _price(fdr, code)
-        if not cur:
+        o = _ohlc(fdr, code)
+        if not o:
             continue
-        ret = (cur / pos["entry"] - 1) * 100
+        entry = pos["entry"]
+        tp_price = entry * (1 + cfg["take_profit"] / 100)
+        sl_price = entry * (1 + cfg["stop_loss"] / 100)
         held = (dt.date.fromisoformat(today) - dt.date.fromisoformat(pos["entry_date"])).days
-        reason = None
-        if ret >= cfg["take_profit"]:
-            reason = f"익절 +{ret:.1f}%"
-        elif ret <= cfg["stop_loss"]:
-            reason = f"손절 {ret:.1f}%"
+        fill = reason = None
+        if o["low"] <= sl_price:                      # 손절 우선(보수적)
+            fill, reason = sl_price, f"손절 {cfg['stop_loss']:.0f}%"
+        elif o["high"] >= tp_price:
+            fill, reason = tp_price, f"익절 +{cfg['take_profit']:.0f}%"
         elif held >= cfg["max_hold_days"]:
-            reason = f"보유만기 {held}일 ({ret:+.1f}%)"
-        if reason:
-            proceeds = pos["shares"] * cur * (1 - fee)
+            fill, reason = o["close"], f"만기 {held}일"
+        if fill:
+            proceeds = pos["shares"] * fill * (1 - fee)
+            pnl = proceeds - pos["shares"] * entry
             acc["cash"] += proceeds
-            pnl = proceeds - pos["shares"] * pos["entry"]
             acc["realized_pnl"] += pnl
+            ret = (fill / entry - 1) * 100
             acc["trades"].append({"date": today, "code": code, "name": pos["name"],
-                                  "side": "SELL", "price": cur, "shares": pos["shares"],
+                                  "side": "SELL", "price": fill, "shares": pos["shares"],
                                   "pnl": round(pnl), "reason": reason})
-            log(f"  매도 {pos['name']} @ {int(cur):,} — {reason} (실현 {pnl:+,.0f})")
+            log(f"  매도 {pos['name']} @ {int(fill):,} — {reason} ({ret:+.1f}%, 실현 {pnl:+,.0f})")
             del acc["positions"][code]
 
-    # 2) 신규 매수 (BUY 픽)
-    equity = _equity(acc, fdr)
+    # ── 3) 오늘 BUY 픽을 '내일 개장가' 예약 ──
+    held_codes = set(acc["positions"]) | {p["code"] for p in acc["pending_buys"]}
     for r in pipeline_out.get("buys", []):
-        code = r["code"]
-        if code in acc["positions"]:
+        if r["code"] in held_codes:
             continue
-        if len(acc["positions"]) >= cfg["max_positions"]:
-            break
-        weight = min(r.get("weight_pct") or 0, cfg["per_trade_cap_pct"]) / 100
-        budget = equity * weight
-        price = r.get("price")
-        if not price or budget < price:
-            continue
-        shares = int(budget // price)
-        if shares <= 0:
-            continue
-        cost = shares * price * (1 + fee)
-        if cost > acc["cash"]:
-            shares = int(acc["cash"] / (price * (1 + fee)))
-            cost = shares * price * (1 + fee)
-        if shares <= 0:
-            continue
-        acc["cash"] -= cost
-        acc["positions"][code] = {"name": r["name"], "shares": shares,
-                                  "entry": price, "entry_date": today}
-        acc["trades"].append({"date": today, "code": code, "name": r["name"],
-                              "side": "BUY", "price": price, "shares": shares,
-                              "confidence": r.get("confidence")})
-        log(f"  매수 {r['name']} {shares}주 @ {int(price):,} (비중 {weight*100:.0f}%)")
+        acc["pending_buys"].append({"code": r["code"], "name": r["name"],
+                                    "weight_pct": r.get("weight_pct"), "pick_date": today})
+        log(f"  예약 매수 {r['name']} (다음 개장가, 비중 {r.get('weight_pct',0):.0f}%)")
 
-    # 3) 스냅샷
-    equity = _equity(acc, fdr)
+    # ── 4) 스냅샷(종가 평가) ──
+    equity = _equity(acc, fdr, "close")
     snap = {"date": today, "equity": round(equity), "cash": round(acc["cash"]),
-            "positions": len(acc["positions"]),
+            "positions": len(acc["positions"]), "pending": len(acc["pending_buys"]),
             "total_return_pct": round((equity / acc["initial_capital"] - 1) * 100, 2)}
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(HISTORY, "a", encoding="utf-8") as f:
@@ -128,21 +154,13 @@ def run_day(pipeline_out: dict, cfg: dict | None = None, log=print) -> dict:
     return {"account": acc, "snapshot": snap}
 
 
-def _equity(acc, fdr):
-    total = acc["cash"]
-    for code, pos in acc["positions"].items():
-        cur = _price(fdr, code) or pos["entry"]
-        total += pos["shares"] * cur
-    return total
-
-
 def status() -> dict:
-    """현재 계좌 상태 + 보유종목 평가."""
     import FinanceDataReader as fdr
     acc = _load()
     rows = []
     for code, pos in acc["positions"].items():
-        cur = _price(fdr, code) or pos["entry"]
+        o = _ohlc(fdr, code)
+        cur = o["close"] if o else pos["entry"]
         ret = (cur / pos["entry"] - 1) * 100
         rows.append({"code": code, "name": pos["name"], "shares": pos["shares"],
                      "entry": pos["entry"], "current": cur, "return_pct": round(ret, 2),
@@ -151,4 +169,4 @@ def status() -> dict:
     return {"cash": round(acc["cash"]), "equity": round(equity),
             "initial": acc["initial_capital"], "realized_pnl": round(acc["realized_pnl"]),
             "total_return_pct": round((equity / acc["initial_capital"] - 1) * 100, 2),
-            "positions": rows}
+            "positions": rows, "pending": acc.get("pending_buys", [])}
