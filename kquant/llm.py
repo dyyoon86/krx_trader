@@ -13,16 +13,22 @@ import subprocess
 import sys
 
 # ── 비용 정책 ──────────────────────────────────────────────
-# 백엔드별 '싼 기본 모델'(대량 호출용). 지정 없으면 이걸로 자동 선택.
+# 백엔드별 '싼 기본 모델'(대량 호출용, tier1). 지정 없으면 이걸로 자동 선택.
 CHEAP_DEFAULT = {
     "claude":   "claude-haiku-4-5-20251001",   # 가장 싼 Claude
     "openai":   "gpt-4o-mini",
     "deepseek": "deepseek-chat",               # 원래 저가
 }
-# 너무 비싼 모델 → 자동 차단(싼 모델로 다운그레이드). 대소문자 무시.
+# 정밀 확인용 '중간가 모델'(tier2, 경계 종목만 소수 호출).
+TIER2_DEFAULT = {
+    "claude":   "claude-sonnet-4-6",
+    "openai":   "gpt-4o-mini",                 # openai는 mini 유지(4o는 고가 차단)
+    "deepseek": "deepseek-chat",
+}
+# 초고가 모델 → 자동 차단(싼 모델로 다운그레이드). sonnet은 tier2로 허용(제외).
 _EXPENSIVE = re.compile(
     r"(opus|gpt-4o(?!-mini)|gpt-4-turbo|gpt-4$|gpt-5(?!-nano|-mini)|"
-    r"\bo1\b|\bo3\b|sonnet|reasoner|deepseek-r)", re.I)
+    r"\bo1\b|\bo3\b|reasoner|deepseek-r)", re.I)
 
 
 def resolve_model(backend: str, requested: str | None, log=print) -> str:

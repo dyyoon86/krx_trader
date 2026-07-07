@@ -34,7 +34,10 @@ def main():
     a.add_argument("--contains", default=None, help="종목명 포함 키워드(간이 테마)")
     a.add_argument("--no-news", action="store_true")
     a.add_argument("--backend", default="claude", choices=["claude", "openai", "deepseek"])
-    a.add_argument("--model", default=None)
+    a.add_argument("--model", default=None, help="tier1 모델(비우면 저가 자동)")
+    a.add_argument("--no-tier2", action="store_true", help="2티어 끄기(전부 저가 단일)")
+    a.add_argument("--tier2-model", default=None, help="tier2 정밀모델(비우면 sonnet)")
+    a.add_argument("--max-tier2", type=int, default=5, help="tier2 재확인 최대 종목수")
     a.add_argument("--notify", action="store_true", help="텔레그램 발송(KQ_CHAT/KQ_KEY)")
 
     sub.add_parser("track", help="저장된 픽 단순 수익률 조회")
@@ -56,7 +59,9 @@ def main():
         out = pipeline.run(
             market=args.market, top_n=args.top, min_marcap=args.min_marcap,
             rank_by=args.rank_by, name_contains=args.contains,
-            use_news=not args.no_news, backend=args.backend, model=args.model)
+            use_news=not args.no_news, backend=args.backend, model=args.model,
+            two_tier=not args.no_tier2, tier2_model=args.tier2_model,
+            max_tier2=args.max_tier2)
         report = pipeline.format_report(out)
         print("\n" + "=" * 60 + "\n" + report)
         if args.notify:

@@ -56,15 +56,18 @@ KQ_CHAT=<chat> KQ_KEY=<key> python run.py analyze --market KOSPI --top 10 --noti
   · 역발상숏셀러: AVOID(0.72) 사이클 피크 후 급락 …
 ```
 
-## 백엔드·모델 (비용 보호 내장)
-대량 호출(종목당 1콜)이라 **저가 모델을 자동 선택**하고, 비싼 모델은 지정해도 **자동 다운그레이드**한다.
-- 기본 모델: claude→`haiku`, openai→`gpt-4o-mini`, deepseek→`deepseek-chat`
-- 차단(자동 강등): opus / gpt-4o / gpt-4-turbo / o1·o3 / sonnet / deepseek-r 등
+## 2티어 모델 전략 (비용 최소 · 정밀도 보강)
+- **tier1(저가·대량)**: 전 종목을 싼 모델로 스크리닝 — claude→`haiku`, openai→`gpt-4o-mini`, deepseek→`deepseek-chat`
+- **tier2(중간가·경계만)**: BUY 또는 확신 높은 HOLD **경계 종목 소수(기본 최대 5개)**만 `sonnet`으로 재확인 → 결정 교정
+- **초고가 차단**: opus / gpt-4o / gpt-4-turbo / o1·o3 / deepseek-r 등은 지정해도 자동 강등
+
 ```bash
-python run.py analyze --backend claude                 # haiku 자동(로컬 CLI, 사실상 무료)
-python run.py analyze --backend deepseek               # deepseek-chat 자동
-python run.py analyze --backend openai --model gpt-4o  # → gpt-4o-mini 로 자동 강등
+python run.py analyze --market KOSPI --top 20            # 2티어 기본 ON (haiku×20 + sonnet×≤5)
+python run.py analyze --top 20 --no-tier2               # 저가 단일(haiku만)
+python run.py analyze --top 20 --tier2-model claude-sonnet-4-6 --max-tier2 3
+python run.py analyze --backend deepseek                # deepseek-chat(tier1) + tier2 동일
 ```
+> 예: tier1 haiku가 HOLD로 애매하게 낸 종목을 tier2 sonnet이 더 확신 있게 AVOID/BUY로 교정.
 
 ## 로드맵
 - [ ] 펀더멘털(PER/PBR/ROE) 노드 — pykrx/네이버 (한국 IP)

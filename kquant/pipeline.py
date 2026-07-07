@@ -7,15 +7,17 @@ from __future__ import annotations
 import datetime as dt
 
 from . import data, news as newsmod, agents, portfolio
-from .llm import LLM
+from .llm import LLM, TIER2_DEFAULT
 
 
 def run(*, market=None, top_n=20, min_marcap=3e11, rank_by="amount",
         name_contains=None, use_news=True, backend="claude", model=None,
-        target_date=None, log=print) -> dict:
+        target_date=None, two_tier=True, tier2_model=None,
+        max_tier2=5, escalate_min_conf=0.45, log=print) -> dict:
     target_date = target_date or dt.date.today().strftime("%Y-%m-%d")
-    llm = LLM(backend=backend, model=model, log=log)
-    log(f"[llm] 백엔드={backend} 모델={llm.model} (저가 우선)")
+    llm = LLM(backend=backend, model=model, log=log)     # tier1(저가)
+    log(f"[llm] tier1={llm.model} (저가 대량)"
+        + (f" · tier2={tier2_model or TIER2_DEFAULT.get(backend)} (경계 정밀)" if two_tier else ""))
 
     log(f"[1/4] 스크리닝 — market={market or '전체'} rank_by={rank_by} top{top_n}"
         + (f" 테마='{name_contains}'" if name_contains else ""))
@@ -36,7 +38,33 @@ def run(*, market=None, top_n=20, min_marcap=3e11, rank_by="amount",
         else:
             log(f"      → {r['action']} (확신 {r['confidence']:.2f}"
                 + (f", 비중 {r['weight_pct']:.0f}%" if r['action'] == 'BUY' else "") + ")")
+        r["tier"] = 1
+        r["_feat"] = feat; r["_news"] = heads; r["_stock"] = s   # tier2 재분석용(임시)
         results.append(r)
+
+    # ── tier2: 경계 종목만 중간가 모델로 정밀 재확인 ──
+    if two_tier:
+        cand = [r for r in results if not r.get("error") and (
+            r["action"] == "BUY" or
+            (r["action"] == "HOLD" and r["confidence"] >= escalate_min_conf))]
+        order0 = {"BUY": 0, "HOLD": 1}
+        cand.sort(key=lambda r: (order0.get(r["action"], 2), -r["confidence"]))
+        cand = cand[:max_tier2]
+        if cand:
+            t2 = LLM(backend=backend, model=(tier2_model or TIER2_DEFAULT.get(backend)), log=log)
+            log(f"[3.5] tier2 정밀 재확인 {len(cand)}종목 → {t2.model}")
+            for r in cand:
+                r2 = agents.analyze(t2, r["_stock"], r["_feat"], r["_news"], target_date)
+                if r2.get("error"):
+                    continue
+                log(f"      ⇧ {r['name']}: tier1 {r['action']}({r['confidence']:.2f}) "
+                    f"→ tier2 {r2['action']}({r2['confidence']:.2f})")
+                r2["tier"] = 2; r2["tier1_action"] = r["action"]
+                results[results.index(r)] = r2
+
+    for r in results:                 # 임시 필드 제거
+        for k in ("_feat", "_news", "_stock"):
+            r.pop(k, None)
 
     # 랭킹: BUY 우선 + 확신 내림차순
     order = {"BUY": 0, "HOLD": 1, "AVOID": 2}
@@ -56,7 +84,8 @@ def format_report(out: dict) -> str:
     if not buys:
         lines.append("오늘 매수결정(BUY) 종목 없음.")
     for r in buys:
-        lines.append(f"## ✅ {r['name']} ({r['code']})  확신 {r['confidence']:.2f} · 비중 {r['weight_pct']:.0f}%")
+        tier = " · 🔬tier2확정" if r.get("tier") == 2 else ""
+        lines.append(f"## ✅ {r['name']} ({r['code']})  확신 {r['confidence']:.2f} · 비중 {r['weight_pct']:.0f}%{tier}")
         lines.append(f"- 종가 {int(r['price']):,}원 · 등락 {r['change']:+.2f}% · 거래대금 {r['amount_eok']:,.0f}억")
         lines.append(f"- {r['summary']}")
         for o in r.get("opinions", []):
